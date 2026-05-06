@@ -1162,9 +1162,6 @@ table.rp-finance-table tfoot td.r{color:#fde68a}
 .bgt-month-input:focus{border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.12)}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-  <!-- Firebase SDK -->
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 </head>
 <body>
 
@@ -1310,62 +1307,27 @@ function confirmSignOut(){
   setTimeout(function(){ if(passEl) passEl.focus(); }, 400);
 }
 
-// ══ FIREBASE SYNC ══
-var FB_CONFIG = {
-  apiKey: "AIzaSyExample-ReplaceWithYours",
-  authDomain: "your-project.firebaseapp.com",
-  databaseURL: "https://your-project-default-rtdb.firebaseio.com",
-  projectId: "your-project"
-};
-var DB_ROOT = 'rs_laundry_2026_xK9mP/RSP_NCShcYZXzAHnWAztWjIeck8i';
-var _fbApp = null;
-var _fbDb = null;
-var _fbOnline = false;
-var _fbSyncTimer = null;
-var _autoBackupTimer = null;
+// ══ GITHUB SYNC ══
+var GH_CONFIG_KEY = 'rs_gh_config';
+var _ghConfig = null;
+var _ghOnline = false;
 
-function initFirebase(){
-  try {
-    if(firebase && firebase.apps && firebase.apps.length === 0){
-      _fbApp = firebase.initializeApp(FB_CONFIG);
-    } else if(firebase.apps && firebase.apps.length > 0){
-      _fbApp = firebase.apps[0];
-    }
-    _fbDb = firebase.database(_fbApp);
+function loadGhConfig(){
+  var saved = localStorage.getItem(GH_CONFIG_KEY);
+  if(saved){ _ghConfig = JSON.parse(saved); return true; }
+  return false;
+}
 
-    // Online presence detection
-    var connRef = _fbDb.ref('.info/connected');
-    connRef.on('value', function(snap){
-      _fbOnline = snap.val() === true;
-      updateOnlineBadge(_fbOnline ? 'online' : 'offline');
-    });
+function ghHeaders(){
+  return {
+    'Authorization': 'token ' + _ghConfig.token,
+    'Accept': 'application/vnd.github.v3+json',
+    'Content-Type': 'application/json'
+  };
+}
 
-    // Load from Firebase on startup
-    _fbDb.ref(DB_ROOT+'/data').once('value').then(function(snap){
-      var fbData = snap.val();
-      if(fbData && fbData.savedAt){
-        var lsRaw = localStorage.getItem(LS_KEY);
-        var lsData = lsRaw ? JSON.parse(lsRaw) : null;
-        // Use whichever is newer
-        var fbTime = new Date(fbData.savedAt).getTime();
-        var lsTime = lsData ? new Date(lsData.savedAt||0).getTime() : 0;
-        if(fbTime > lsTime){
-          restoreFromPayload(fbData);
-          showFlash('Data loaded from cloud sync','teal');
-        }
-      }
-    }).catch(function(e){ console.warn('FB load error:', e); });
-
-    // Auto backup every 30 minutes
-    _autoBackupTimer = setInterval(function(){
-      autoBackup();
-    }, 30 * 60 * 1000);
-
-    console.log('Firebase initialized');
-  } catch(e){
-    console.warn('Firebase init failed:', e);
-    updateOnlineBadge('offline');
-  }
+function ghApiUrl(path){
+  return 'https://api.github.com/repos/' + _ghConfig.owner + '/' + _ghConfig.repo + '/contents/' + path;
 }
 
 function updateOnlineBadge(state){
@@ -1373,61 +1335,67 @@ function updateOnlineBadge(state){
   var label = document.getElementById('online-label');
   if(!badge) return;
   badge.className = 'online-badge ' + state;
-  if(state === 'online') label.textContent = 'Online';
-  else if(state === 'syncing') label.textContent = 'Syncing...';
+  if(state==='online') label.textContent = 'GitHub ✓';
+  else if(state==='syncing') label.textContent = 'Saving...';
   else label.textContent = 'Offline';
 }
 
+function initGitHubSync(){
+  if(!loadGhConfig()){ updateOnlineBadge('offline'); return; }
+  // Test connection
+  fetch('https://api.github.com/user', { headers: ghHeaders() })
+    .then(function(r){ 
+      if(r.ok){ _ghOnline=true; updateOnlineBadge('online'); }
+      else { updateOnlineBadge('offline'); }
+    })
+    .catch(function(){ updateOnlineBadge('offline'); });
+}
+
 function fbSync(payload){
-  if(!_fbDb || !_fbOnline) return;
+  // GitHub sync — save data.json to repo
+  if(!_ghConfig || !_ghOnline) return;
   updateOnlineBadge('syncing');
-  _fbDb.ref(DB_ROOT+'/data').set(payload).then(function(){
-    updateOnlineBadge('online');
-  }).catch(function(e){
-    console.warn('FB sync error:', e);
-    updateOnlineBadge('offline');
-  });
+  var content = btoa(unescape(encodeURIComponent(JSON.stringify(payload, null, 2))));
+  // Get current SHA first
+  fetch(ghApiUrl('data.json'), { headers: ghHeaders() })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(existing){
+      var body = { message: 'Auto-save ' + new Date().toISOString().substring(0,16), content: content };
+      if(existing && existing.sha) body.sha = existing.sha;
+      return fetch(ghApiUrl('data.json'), {
+        method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body)
+      });
+    })
+    .then(function(r){ 
+      if(r.ok) updateOnlineBadge('online');
+      else updateOnlineBadge('offline');
+    })
+    .catch(function(){ updateOnlineBadge('offline'); });
 }
 
 function autoBackup(){
-  if(!_fbDb) return;
+  if(!_ghConfig || !_ghOnline) return;
   var payload = buildSavePayload();
-  var backupKey = new Date().toISOString().replace(/[:.]/g,'-').substring(0,16);
-  _fbDb.ref(DB_ROOT+'/backups/'+backupKey).set(payload).then(function(){
-    console.log('Auto backup saved:', backupKey);
-    // Keep only last 50 backups
-    _fbDb.ref(DB_ROOT+'/backups').orderByKey().once('value').then(function(snap){
-      var keys = [];
-      snap.forEach(function(child){ keys.push(child.key); });
-      if(keys.length > 50){
-        var toDelete = keys.slice(0, keys.length - 50);
-        toDelete.forEach(function(k){ _fbDb.ref(DB_ROOT+'/backups/'+k).remove(); });
-      }
-    });
-  }).catch(function(e){ console.warn('Auto backup failed:', e); });
+  var key = 'backups/backup-' + new Date().toISOString().replace(/[:.]/g,'-').substring(0,16) + '.json';
+  var content = btoa(unescape(encodeURIComponent(JSON.stringify(payload, null, 2))));
+  fetch(ghApiUrl(key), { headers: ghHeaders() })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(existing){
+      var body = { message: 'Auto-backup ' + new Date().toISOString().substring(0,16), content: content };
+      if(existing && existing.sha) body.sha = existing.sha;
+      return fetch(ghApiUrl(key), { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
+    })
+    .then(function(r){ if(r.ok) console.log('Auto backup saved:', key); })
+    .catch(function(e){ console.warn('Auto backup failed:', e); });
 }
 
-function manualBackupToFirebase(){
-  if(!_fbDb){
-    showFlash('Not connected to Firebase — configure first','warn');
-    return;
-  }
-  var payload = buildSavePayload();
-  var backupKey = 'manual-'+new Date().toISOString().replace(/[:.]/g,'-').substring(0,16);
-  updateOnlineBadge('syncing');
-  _fbDb.ref(DB_ROOT+'/backups/'+backupKey).set(payload).then(function(){
-    updateOnlineBadge('online');
-    showFlash('Manual backup saved to cloud ✓','teal');
-  }).catch(function(e){
-    updateOnlineBadge('offline');
-    showFlash('Backup failed: '+e.message,'warn');
-  });
-}
+// Auto backup every 30 min
+setInterval(function(){ autoBackup(); }, 30 * 60 * 1000);
 
 document.addEventListener('DOMContentLoaded',function(){
   setTimeout(function(){document.getElementById('lg-pass').focus();},200);
-  // Init Firebase after page loads
-  setTimeout(initFirebase, 500);
+  // Init GitHub sync
+  setTimeout(initGitHubSync, 500);
 });
 </script>
 
