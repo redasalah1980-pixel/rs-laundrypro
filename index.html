@@ -50,6 +50,10 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#f0f4f8;color:#1e2d3
 .header-right{display:flex;gap:5px;align-items:center;margin-left:auto;flex-shrink:0}
 .hdr-save{display:flex;align-items:center;gap:4px;padding:0 8px;border-right:1px solid rgba(255,255,255,.1);margin-right:2px}
 .dm-save-dot{width:6px;height:6px;border-radius:50%;background:#10b981;flex-shrink:0;transition:background .3s}
+.online-badge{display:flex;align-items:center;gap:4px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;white-space:nowrap;transition:all .3s}
+.online-badge.online{background:rgba(16,185,129,.15);color:#6ee7b7;border:1px solid rgba(16,185,129,.3)}
+.online-badge.offline{background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3)}
+.online-badge.syncing{background:rgba(245,200,66,.15);color:#f5c842;border:1px solid rgba(245,200,66,.3)}
 select.hs{background:rgba(255,255,255,.08);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:7px;padding:2px 7px;font-size:12px;cursor:pointer;outline:none;font-weight:700;height:26px;transition:all .14s}
 select.hs:hover{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.3)}
 select.hs:focus{border-color:#f5c842;background:rgba(245,200,66,.08)}
@@ -1158,6 +1162,9 @@ table.rp-finance-table tfoot td.r{color:#fde68a}
 .bgt-month-input:focus{border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.12)}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 </head>
 <body>
 
@@ -1302,8 +1309,125 @@ function confirmSignOut(){
   if(btnEl){ btnEl.textContent = 'Sign In →'; btnEl.style.background = 'linear-gradient(135deg,#f5c842,#e8a020)'; btnEl.style.color = '#0f1f35'; }
   setTimeout(function(){ if(passEl) passEl.focus(); }, 400);
 }
+
+// ══ FIREBASE SYNC ══
+var FB_CONFIG = {
+  apiKey: "AIzaSyExample-ReplaceWithYours",
+  authDomain: "your-project.firebaseapp.com",
+  databaseURL: "https://your-project-default-rtdb.firebaseio.com",
+  projectId: "your-project"
+};
+var DB_ROOT = 'rs_laundry_2026_xK9mP/RSP_NCShcYZXzAHnWAztWjIeck8i';
+var _fbApp = null;
+var _fbDb = null;
+var _fbOnline = false;
+var _fbSyncTimer = null;
+var _autoBackupTimer = null;
+
+function initFirebase(){
+  try {
+    if(firebase && firebase.apps && firebase.apps.length === 0){
+      _fbApp = firebase.initializeApp(FB_CONFIG);
+    } else if(firebase.apps && firebase.apps.length > 0){
+      _fbApp = firebase.apps[0];
+    }
+    _fbDb = firebase.database(_fbApp);
+
+    // Online presence detection
+    var connRef = _fbDb.ref('.info/connected');
+    connRef.on('value', function(snap){
+      _fbOnline = snap.val() === true;
+      updateOnlineBadge(_fbOnline ? 'online' : 'offline');
+    });
+
+    // Load from Firebase on startup
+    _fbDb.ref(DB_ROOT+'/data').once('value').then(function(snap){
+      var fbData = snap.val();
+      if(fbData && fbData.savedAt){
+        var lsRaw = localStorage.getItem(LS_KEY);
+        var lsData = lsRaw ? JSON.parse(lsRaw) : null;
+        // Use whichever is newer
+        var fbTime = new Date(fbData.savedAt).getTime();
+        var lsTime = lsData ? new Date(lsData.savedAt||0).getTime() : 0;
+        if(fbTime > lsTime){
+          restoreFromPayload(fbData);
+          showFlash('Data loaded from cloud sync','teal');
+        }
+      }
+    }).catch(function(e){ console.warn('FB load error:', e); });
+
+    // Auto backup every 30 minutes
+    _autoBackupTimer = setInterval(function(){
+      autoBackup();
+    }, 30 * 60 * 1000);
+
+    console.log('Firebase initialized');
+  } catch(e){
+    console.warn('Firebase init failed:', e);
+    updateOnlineBadge('offline');
+  }
+}
+
+function updateOnlineBadge(state){
+  var badge = document.getElementById('online-badge');
+  var label = document.getElementById('online-label');
+  if(!badge) return;
+  badge.className = 'online-badge ' + state;
+  if(state === 'online') label.textContent = 'Online';
+  else if(state === 'syncing') label.textContent = 'Syncing...';
+  else label.textContent = 'Offline';
+}
+
+function fbSync(payload){
+  if(!_fbDb || !_fbOnline) return;
+  updateOnlineBadge('syncing');
+  _fbDb.ref(DB_ROOT+'/data').set(payload).then(function(){
+    updateOnlineBadge('online');
+  }).catch(function(e){
+    console.warn('FB sync error:', e);
+    updateOnlineBadge('offline');
+  });
+}
+
+function autoBackup(){
+  if(!_fbDb) return;
+  var payload = buildSavePayload();
+  var backupKey = new Date().toISOString().replace(/[:.]/g,'-').substring(0,16);
+  _fbDb.ref(DB_ROOT+'/backups/'+backupKey).set(payload).then(function(){
+    console.log('Auto backup saved:', backupKey);
+    // Keep only last 50 backups
+    _fbDb.ref(DB_ROOT+'/backups').orderByKey().once('value').then(function(snap){
+      var keys = [];
+      snap.forEach(function(child){ keys.push(child.key); });
+      if(keys.length > 50){
+        var toDelete = keys.slice(0, keys.length - 50);
+        toDelete.forEach(function(k){ _fbDb.ref(DB_ROOT+'/backups/'+k).remove(); });
+      }
+    });
+  }).catch(function(e){ console.warn('Auto backup failed:', e); });
+}
+
+function manualBackupToFirebase(){
+  if(!_fbDb){
+    showFlash('Not connected to Firebase — configure first','warn');
+    return;
+  }
+  var payload = buildSavePayload();
+  var backupKey = 'manual-'+new Date().toISOString().replace(/[:.]/g,'-').substring(0,16);
+  updateOnlineBadge('syncing');
+  _fbDb.ref(DB_ROOT+'/backups/'+backupKey).set(payload).then(function(){
+    updateOnlineBadge('online');
+    showFlash('Manual backup saved to cloud ✓','teal');
+  }).catch(function(e){
+    updateOnlineBadge('offline');
+    showFlash('Backup failed: '+e.message,'warn');
+  });
+}
+
 document.addEventListener('DOMContentLoaded',function(){
   setTimeout(function(){document.getElementById('lg-pass').focus();},200);
+  // Init Firebase after page loads
+  setTimeout(initFirebase, 500);
 });
 </script>
 
@@ -1330,10 +1454,14 @@ document.addEventListener('DOMContentLoaded',function(){
   </div>
 
   <div class="header-right">
-    <!-- Save status -->
+    <!-- Save status + Online indicator -->
     <div class="hdr-save">
       <div class="dm-save-dot" id="dm-save-dot"></div>
       <span id="dm-status-text" style="font-size:10px;color:rgba(255,255,255,.4);font-weight:600;white-space:nowrap"></span>
+    </div>
+    <div class="online-badge offline" id="online-badge" title="Firebase sync status">
+      <span id="online-dot" style="width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0"></span>
+      <span id="online-label">Offline</span>
     </div>
     <!-- Period selectors -->
     <select class="hs" id="yearSel" onchange="onYearChange()" title="Year"></select>
@@ -2160,7 +2288,7 @@ function buildCalendar(){
     var barW = (rev>0 && monthMaxRev>0) ? Math.min(100, Math.round(rev/monthMaxRev*100)) : 0;
     var barColor = dow===5?'#0d9488':dow===6?'#e11d48':'#d4a800';
     if(cell.classList.contains('selected')) barColor='rgba(245,200,66,.6)';
-    var revDisplay = rev>0 ? (rev>=10000?(rev/1000).toFixed(1)+'K':rev.toFixed(2)) : '';
+    var revDisplay = rev>0 ? (rev>=10000?(rev/1000).toFixed(1)+'K':rev.toLocaleString('en-QA',{minimumFractionDigits:2,maximumFractionDigits:2})) : '';
     cell.innerHTML=
       '<div class="cal-day-num">'+d+'</div>'
       +(rev>0
@@ -7300,15 +7428,16 @@ function persistSave(){
     var payload = buildSavePayload();
     localStorage.setItem(LS_KEY, JSON.stringify(payload));
     var dot = document.getElementById('dm-save-dot');
-    var st = document.getElementById('dm-status');
     if(dot) dot.style.background='#6ee7b7';
     var now = new Date();
     var t = now.getHours().toString().padStart(2,'0')+':'+now.getMinutes().toString().padStart(2,'0');
     var stEl=document.getElementById('dm-status-text');
     if(stEl) stEl.textContent='Saved '+t;
+    // Also sync to Firebase
+    fbSync(payload);
   } catch(e){
-    var st = document.getElementById('dm-status');
-    if(st) st.textContent='Save failed!';
+    var stEl2=document.getElementById('dm-status-text');
+    if(stEl2) stEl2.textContent='Save failed!';
     console.warn('localStorage save failed:',e);
   }
 }
@@ -7995,6 +8124,13 @@ function showTab(tab,el){
   if(tab==='items'){buildItemsManager();}
   if(tab==='analytics'){
     buildAnalytics();
+    setTimeout(function(){
+      var days2=daysInMonth(selMonth,selYear);
+      var dr2=[],dk2=[];
+      for(var d=1;d<=days2;d++){var t2=calcDay(d);dr2.push(t2.rev);dk2.push(t2.kg);}
+      buildAnTrendChart('an-rev-svg',dr2,'#d97706','rgba(245,200,66,.15)','an-rev-peak','QR ');
+      buildAnTrendChart('an-kg-svg',dk2,'#0e9e82','rgba(94,207,184,.12)','an-kg-peak','');
+    },200);
   }
   if(tab==='benchmark'){
     buildBenchmark();
