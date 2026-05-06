@@ -84,7 +84,7 @@ body{font-family:"Segoe UI",system-ui,sans-serif;background:var(--surface);color
       <div class="card-title">&#x1F527; GitHub Configuration</div>
       <button class="btn btn-ghost" style="color:#fff;border-color:rgba(255,255,255,.2);padding:5px 12px;font-size:11.5px" onclick="toggleCfg()" id="cfg-btn">Configure</button>
     </div>
-    <div id="cfg-form" style="display:none">
+    <div id="cfg-form" style="display:block">
       <div class="card-body">
         <div class="warn-box">&#x1F512; <strong>Security note:</strong> Your token is stored only in this browser&rsquo;s localStorage and sent only directly to the GitHub API. Use a token with <strong>repo</strong> scope. You can revoke it anytime from GitHub &rarr; Settings &rarr; Developer Settings &rarr; Personal Access Tokens.</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
@@ -99,7 +99,7 @@ body{font-family:"Segoe UI",system-ui,sans-serif;background:var(--surface);color
         </div>
       </div>
     </div>
-    <div class="card-body" id="cfg-status" style="display:flex;align-items:center;gap:12px">
+    <div class="card-body" id="cfg-status" style="display:none;align-items:center;gap:12px">
       <div id="cdot" style="width:10px;height:10px;border-radius:50%;background:#cbd5e1;flex-shrink:0"></div>
       <span id="ctxt" style="font-size:13px;color:var(--text2)">Not configured &mdash; click Configure</span>
     </div>
@@ -150,7 +150,7 @@ var _cfg=null,_ok=false,_all=[],_timer=null;
 function toast(m,t){var e=document.getElementById('toast');e.textContent=m;e.className='toast show '+(t||'');clearTimeout(e._t);e._t=setTimeout(function(){e.className='toast';},3500);}
 function setStatus(s,t){var p=document.getElementById('spill');p.className='pill '+s;document.getElementById('stxt').textContent=t;var d=document.getElementById('cdot');document.getElementById('ctxt').textContent=s==='online'?'Connected: '+(_cfg?_cfg.owner+'/'+_cfg.repo:''):s==='syncing'?'Syncing...':'Not connected';d.style.background=s==='online'?'#10b981':s==='syncing'?'#f5c842':'#ef4444';}
 function toggleCfg(){var f=document.getElementById('cfg-form'),s=document.getElementById('cfg-status'),b=document.getElementById('cfg-btn'),shown=f.style.display!=='none';f.style.display=shown?'none':'block';s.style.display=shown?'flex':'none';b.textContent=shown?'Configure':'Hide';}
-function saveCfg(){var o=document.getElementById('cfg-owner').value.trim(),r=document.getElementById('cfg-repo').value.trim(),t=document.getElementById('cfg-token').value.trim();if(!o||!r||!t){toast('All fields required','warn');return;}_cfg={owner:o,repo:r,token:t};localStorage.setItem(GK,JSON.stringify(_cfg));document.getElementById('cfg-token').value='';document.getElementById('cfg-form').style.display='none';document.getElementById('cfg-status').style.display='flex';document.getElementById('cfg-btn').textContent='Configure';testConn();}
+function saveCfg(){var o=document.getElementById('cfg-owner').value.trim(),r=document.getElementById('cfg-repo').value.trim(),t=document.getElementById('cfg-token').value.trim();if(!o||!r||!t){toast('All fields required','warn');return;}_cfg={owner:o,repo:r,token:t};localStorage.setItem(GK,JSON.stringify(_cfg));document.getElementById('cfg-token').value='';document.getElementById('cfg-form').style.display='none';document.getElementById('cfg-status').style.display='flex';document.getElementById('cfg-btn').textContent='Edit Config';testConn();}
 function loadCfg(){var s=localStorage.getItem(GK);if(!s){toast('No saved config','warn');return;}_cfg=JSON.parse(s);document.getElementById('cfg-owner').value=_cfg.owner||'';document.getElementById('cfg-repo').value=_cfg.repo||'';document.getElementById('cfg-token').value='';toast('Config loaded (token hidden)','teal');}
 function clearCfg(){localStorage.removeItem(GK);_cfg=null;_ok=false;setStatus('offline','Not connected');toast('Config cleared','warn');}
 function gh(path){return'https://api.github.com/repos/'+_cfg.owner+'/'+_cfg.repo+'/contents/'+path;}
